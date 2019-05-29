@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mongoose.h"
+#include "3rd/mongoose.h"
 #include <string>
 #include <map>
 #include <functional>

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "routing.hpp"
-#include "json.hpp"
-#include "mongoose.h"
+#include "3rd/json.hpp"
+#include "3rd/mongoose.h"
 
 #include <sstream>
 #include <string>

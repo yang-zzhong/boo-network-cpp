@@ -1,12 +1,12 @@
 #include "http_server.hpp"
 #include "http_client.hpp"
 #include "ws_client.hpp"
-#include "mongoose.h"
+#include "3rd/mongoose.h"
 #include "routing.hpp"
 #include <functional>
 #include <iostream>
 #include <map>
-#include "json.hpp"
+#include "3rd/json.hpp"
 
 using boo::network::http_server;
 using boo::network::routing;
