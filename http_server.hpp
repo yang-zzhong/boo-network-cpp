@@ -3,11 +3,13 @@
 #include "routing.hpp"
 #include "3rd/json.hpp"
 #include "3rd/mongoose.h"
-
+#include "http_message.hpp"
 #include <sstream>
 #include <string>
 #include <functional>
 #include <map>
+
+using m_http_message = struct http_message;
 
 namespace boo { namespace network {
 
@@ -18,9 +20,9 @@ class http_server {
 public:
 class http_context {
     struct mg_connection * _nc;
-    struct http_message * _req;
+    http_request * _req;
 public:
-    http_context(struct mg_connection * nc, struct http_message * r): _nc(nc), _req(r)
+    http_context(struct mg_connection * nc, http_request * r): _nc(nc), _req(r)
     {
     }
 
@@ -28,8 +30,18 @@ public:
         return _nc;
     }
 
-    http_message * req() {
+    http_request * req() {
         return _req;
+    }
+
+    void close()
+    {
+    }
+
+    void send(const http_response & res)
+    {
+        std::map<std::string, std::string> headers = res.headers;
+        send(res.status_code, res.body, &headers);
     }
 
     void send(int status_code, char * body, std::map<std::string, std::string> * headers = nullptr)
@@ -81,21 +93,12 @@ public:
     }
 };
 
-class ws_context {
+class ws_conn {
     struct mg_connection * _nc;
     bool _valid_req = true;
 public:
     json req;
-    ws_context(struct mg_connection * conn): _nc(conn) {}
-    ws_context(struct mg_connection * conn, struct websocket_message * msg): _nc(conn)
-    {
-        std::string input((const char *)msg->data, msg->size);
-        try {
-            req = json::parse(input);
-        } catch (exception ex) {
-            _valid_req = false;
-        }
-    }
+    ws_conn(struct mg_connection * conn): _nc(conn) {}
 
     bool is_valid() {
         return _valid_req;
@@ -113,7 +116,7 @@ public:
 
 private:
     mg_mgr _mgr;
-    routing::router<function<void(ws_context *)>> * _ws_router = nullptr;
+    routing::router<function<void(ws_conn *, const json &)>> * _ws_router = nullptr;
     routing::router<function<void(http_context *, routing::params *)>> * _http_router = nullptr;
 
     struct mg_connection * _nc = nullptr;
@@ -131,9 +134,10 @@ private:
         return nc->flags & MG_F_IS_WEBSOCKET;
     };
 
-    void on_ws(struct mg_connection * nc, struct http_message * hm) {
+    void on_ws(struct mg_connection * nc, m_http_message * hm) {
         if (_on_ws != nullptr) {
-            http_server::http_context ctx{nc, hm};
+            auto req = http_request::from_hm(hm);
+            http_server::http_context ctx{nc, &req};
             _on_ws(&ctx);
         }
     };
@@ -153,7 +157,7 @@ public:
     {
     }
 
-    void enable_ws(routing::router<function<void(ws_context *)>> * router)
+    void enable_ws(routing::router<function<void(ws_conn *, const json &)>> * router)
     {
         _ws_router = router;
         _ws_enabled = true;
@@ -179,17 +183,12 @@ public:
             }
             return;
         }
-        std::string path(hm->uri.p, hm->uri.len);
-        std::string method(hm->method.p, hm->method.len);
-        auto n = path.find("?");
-        if (n != string::npos) {
-            path = path.substr(0, n);
-        }
+        auto req = http_request::from_hm(hm);
         routing::params p;
-        _http_router->route(routing::concat_method_path(method, path), &p,
+        _http_router->route(routing::concat_method_path(req.method, req.target.path()), &p,
             [&](bool path_found, routing::params * p,  function<void(http_context *, routing::params *)> callback) {
 
-            http_context ctx(nc, hm);
+            http_context ctx(nc, &req);
             if (path_found && callback != nullptr) {
                 callback(&ctx, p);
                 return;
@@ -211,24 +210,28 @@ public:
         if (!_ws_enabled) {
             return;
         }
-        ws_context ctx(nc, hm);
-        if (!ctx.is_valid()) {
+        std::string input((const char *)hm->data, hm->size);
+        json req;
+        try {
+            req = json::parse(input);
+        } catch (exception ex) {
             return;
         }
-        auto id_iter = ctx.req.find("id");
-        if (id_iter == ctx.req.end()) {
+        ws_conn ctx(nc);
+        auto id_iter = req.find("id");
+        if (id_iter == req.end()) {
             return;
         }
         auto id = (*id_iter).get<string>();
-        auto method_iter = ctx.req.find("method");
-        if (method_iter == ctx.req.end()) {
+        auto method_iter = req.find("method");
+        if (method_iter == req.end()) {
             return;
         }
         routing::params p;
         _ws_router->route(routing::concat_method_path(method_iter->get<string>(), id_iter->get<string>()), &p,
-            [&ctx](bool path_found, routing::params * p, std::function<void(ws_context *)> call) {
+            [&ctx, &req](bool path_found, routing::params * p, std::function<void(ws_conn *, const json &)> call) {
                 if (path_found && call != nullptr) {
-                    call(&ctx);
+                    call(&ctx, req);
                     return;
                 }
             });

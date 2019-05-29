@@ -1,4 +1,5 @@
 #include "http_server.hpp"
+#include "http_message.hpp"
 #include "http_client.hpp"
 #include "ws_client.hpp"
 #include "3rd/mongoose.h"
@@ -10,6 +11,8 @@
 
 using boo::network::http_server;
 using boo::network::routing;
+using boo::network::http_request;
+using boo::network::http_response;
 using boo::network::http_client;
 using boo::network::ws_client;
 using nlohmann::json;
@@ -20,26 +23,26 @@ int main() {
     routing::router<std::function<void(http_server::http_context *, routing::params * p)>> http_router;
     http_router.on(routing::get, "/hello-world", [](http_server::http_context * ctx, routing::params * p) {
         auto req = ctx->req();
-        std::string body(req->body.p, req->body.len);
         printf("an\\\\\\\\\\\\\\\\\\\\\\\\\---\---\n");
+        printf("body: %s", req->body.c_str());
         std::map<std::string, std::string> headers{
             {"hello-world", "hello-world"},
         };
         ctx->send(200, "hello world", &headers);
     });
-    routing::router<std::function<void(http_server::ws_context *)>> ws_router;
-    ws_router.on(routing::post, "hello-world", [](http_server::ws_context * ctx) {
+    routing::router<std::function<void(http_server::ws_conn *, const json &)>> ws_router;
+    ws_router.on(routing::post, "hello-world", [](http_server::ws_conn * conn, const json & data) {
         printf("server receive ws hello-world\n");
         json msg;
         msg["id"] = "hello-world";
         msg["data"] = "hello world";
-        ctx->send(msg);
+        conn->send(msg);
     });
     http_server s;
     s.enable_http_api(&http_router);
     s.enable_ws(&ws_router);
     s.set_on_ws([](http_server::http_context * ctx) {
-        http_server::ws_context wctx{ ctx->conn() };
+        http_server::ws_conn wctx{ ctx->conn() };
         nlohmann::json data;
         data["id"] = "hello-world";
         data["method"] = "POST";
@@ -57,14 +60,13 @@ int main() {
 
     http_client client("127.0.0.1:8080");
     client.connect();
-    http_client::request req("hello-world", "GET");
+    http_request req("hello-world", "GET");
     req.headers["hello-world"] = "hello world";
     req.body = "hello world";
 
-    for (int i = 0; i < 10; ++i) {
-        client.send(req, [](const struct http_message & hm) {
-            std::string body(hm.body.p, hm.body.len);
-            printf("reply: %s\n", body.c_str());
+    for (int i = 0; i < 10000; ++i) {
+        client.send(req, [](const http_response & hm) {
+            printf("reply: %s\n", hm.body.c_str());
         });
     }
 

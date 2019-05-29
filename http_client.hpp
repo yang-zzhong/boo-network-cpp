@@ -1,6 +1,7 @@
 #pragma once
 
 #include "3rd/mongoose.h"
+#include "http_message.hpp"
 #include <string>
 #include <map>
 #include <functional>
@@ -16,10 +17,12 @@ class http_client
     mg_mgr _mgr;
     struct mg_connection * _nc = nullptr;
     bool _handled = false;
-    std::function<void(const struct http_message &)> _handler;
+    std::function<void(const http_response &)> _handler;
     std::string _base;
     bool _connected = false;
     std::mutex _lock;
+
+    std::list<std::pair<http_request, std::function<void(const http_response &)>>> _requests;
 
 public:
     http_client(const std::string & base): _base(base)
@@ -33,17 +36,6 @@ public:
         }
     }
 
-    class request {
-    public:
-        std::string url;
-        std::string method;
-        std::string body;
-        std::map<std::string, std::string> headers;
-
-        request(const std::string & u, const std::string & m): url(u), method(m) {}
-    };
-
-    std::list<std::pair<request, std::function<void(const struct http_message &)>>> _requests;
 
     void connect(size_t poll_interval = 10)
     {
@@ -72,7 +64,7 @@ public:
         }).detach();
     }
 
-    void send_and_handle_reply(const request & req, std::function<void(const struct http_message &)> handler)
+    void send_and_handle_reply(const http_request & req, std::function<void(const http_response &)> handler)
     {
         do_send(req);
         _handled = false;
@@ -80,9 +72,9 @@ public:
         while (!_handled) {}
     }
 
-    void do_send(const request & req)
+    void do_send(const http_request & req)
     {
-        std::string msg = req.method + " " + req.url + " HTTP/1.1\r\n";
+        std::string msg = req.method + " " + req.target.str() + " HTTP/1.1\r\n";
         for (auto i = req.headers.begin(); i != req.headers.end(); ++i) {
             msg += i->first + ":" + i->second + "\r\n";
         }
@@ -94,10 +86,10 @@ public:
         mg_printf(_nc, "%s", msg.c_str());
     }
 
-    void send(const request & req, struct http_message & res)
+    void send(const http_request & req, http_response & res)
     {
-        const struct http_message * rp = nullptr;
-        send(req, [&](const struct http_message & r) {
+        const http_response * rp = nullptr;
+        send(req, [&](const http_response & r) {
             rp = &r;
         });
         while (rp == nullptr) { }
@@ -105,10 +97,10 @@ public:
         res = *rp;
     }
 
-    void send(const request & req, std::function<void(const struct http_message & )> handler)
+    void send(const http_request & req, std::function<void(const http_response & )> handler)
     {
         std::lock_guard<std::mutex> locker(_lock);
-        _requests.push_back(std::pair<request, std::function<void(const struct http_message &)>>(req, handler));
+        _requests.push_back(std::pair<http_request, std::function<void(const http_response &)>>(req, handler));
     }
 
     static void mongoose_http_ev_handler(struct mg_connection *nc, int ev, void *ev_data)
@@ -124,7 +116,7 @@ public:
                 }
                 break;
             case MG_EV_HTTP_REPLY:
-                client->_handler(*hm);
+                client->_handler(http_response::from_hm(hm));
                 client->_handled = true;
                 break;
         }
