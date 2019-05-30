@@ -30,6 +30,16 @@ int main() {
         };
         ctx->send(200, "hello world", &headers);
     });
+    http_router.on(routing::get, "/ws/{id}", [](http_server::http_context * ctx, routing::params * p) {
+        if (!ctx->is_websocket_handshake_done()) {
+            return;
+        }
+        http_server::ws_conn wctx{ ctx->conn() };
+        nlohmann::json data;
+        data["id"] = "hello-world";
+        data["method"] = "POST";
+        wctx.send(data);
+    });
     routing::router<std::function<void(http_server::ws_conn *, const json &)>> ws_router;
     ws_router.on(routing::post, "hello-world", [](http_server::ws_conn * conn, const json & data) {
         printf("server receive ws hello-world\n");
@@ -41,14 +51,7 @@ int main() {
     http_server s;
     s.enable_http_api(&http_router);
     s.enable_ws(&ws_router);
-    s.set_on_ws([](http_server::http_context * ctx) {
-        http_server::ws_conn wctx{ ctx->conn() };
-        nlohmann::json data;
-        data["id"] = "hello-world";
-        data["method"] = "POST";
-        wctx.send(data);
-    });
-    s.set_on_ws_close([](struct mg_connection * conn) {
+    s.set_on_ws_close([](const http_server::ws_conn &) {
     
     });
     opts.document_root = "d:\\projects\\vod-service-3.0\\test\\html";
@@ -65,7 +68,8 @@ int main() {
     req.headers["hello-world"] = "hello world";
     req.body = "hello world";
 
-    for (int i = 0; i < 10000; ++i) {
+    for (int i = 0; i < 100; ++i) {
+        http_response hm;
         client.send(req, [](const http_response & hm) {
             printf("reply: %s\n", hm.body.c_str());
         });

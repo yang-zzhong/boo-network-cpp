@@ -60,7 +60,7 @@ public:
         ret[key] = value;
     }
 
-    const std::string & path()
+    const std::string & path() const
     {
         return _path;
     }
@@ -80,12 +80,12 @@ public:
         _hash = hash;
     }
 
-    const std::string & hash()
+    const std::string & hash() const
     {
         return _hash;
     }
 
-    const std::map<std::string, std::string> & queries()
+    const std::map<std::string, std::string> & queries() const
     {
         return _queries;
     }
@@ -133,14 +133,14 @@ public:
         return s;
     }
 
-    const std::string & find(const std::string & key)
+    const std::string & find(const std::string & key) const
     {
         auto i = _queries.find(key);
         if (i == _queries.end()) {
             return _empty;
         }
 
-        return _queries[key];
+        return _queries.at(key);
     }
 
 private:

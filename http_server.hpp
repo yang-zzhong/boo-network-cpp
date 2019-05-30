@@ -21,6 +21,7 @@ public:
 class http_context {
     struct mg_connection * _nc;
     http_request * _req;
+    bool _is_websocket_handshake_done = false;
 public:
     http_context(struct mg_connection * nc, http_request * r): _nc(nc), _req(r)
     {
@@ -36,6 +37,16 @@ public:
 
     void close()
     {
+    }
+
+    void set_websocket_handshake_done(bool is)
+    {
+        _is_websocket_handshake_done = is;
+    }
+
+    bool is_websocket_handshake_done()
+    {
+        return _is_websocket_handshake_done;
     }
 
     void send(const http_response & res)
@@ -112,6 +123,10 @@ public:
 
         mg_send_websocket_frame(_nc, WEBSOCKET_OP_TEXT, msg.c_str(), msg.length());
     }
+
+    bool operator == (const ws_conn & ws) {
+        return _nc == ws._nc;
+    }
 };
 
 private:
@@ -120,8 +135,7 @@ private:
     routing::router<function<void(http_context *, routing::params *)>> * _http_router = nullptr;
 
     struct mg_connection * _nc = nullptr;
-    std::function<void(http_context *)> _on_ws;
-    std::function<void(struct mg_connection *)> _on_ws_close;
+    std::function<void(const ws_conn &)> _on_ws_close;
 
     bool _stop = false;
     bool _ws_enabled = false;
@@ -134,21 +148,13 @@ private:
         return nc->flags & MG_F_IS_WEBSOCKET;
     };
 
-    void on_ws(struct mg_connection * nc, m_http_message * hm) {
-        if (_on_ws != nullptr) {
-            auto req = http_request::from_hm(hm);
-            http_server::http_context ctx{nc, &req};
-            _on_ws(&ctx);
-        }
-    };
-
     void stop() {
         _stop = true;
     }
 
-    void on_ws_close(struct mg_connection * nc) {
+    void on_ws_close(const ws_conn & ws) {
         if (_on_ws_close != nullptr) {
-            _on_ws_close(nc);
+            _on_ws_close(ws);
         }
     };
     
@@ -175,7 +181,7 @@ public:
         _http_api_enabled = true;
     }
 
-    void handle_http_api(struct mg_connection * nc, struct http_message * hm)
+    void handle_http_api(struct mg_connection * nc, struct http_message * hm, bool is_websocket = false)
     {
         if (!_http_api_enabled) {
             if (_webroot_enabled) {
@@ -189,6 +195,7 @@ public:
             [&](bool path_found, routing::params * p,  function<void(http_context *, routing::params *)> callback) {
 
             http_context ctx(nc, &req);
+            ctx.set_websocket_handshake_done(is_websocket);
             if (path_found && callback != nullptr) {
                 callback(&ctx, p);
                 return;
@@ -237,11 +244,7 @@ public:
             });
     }
 
-    void set_on_ws(std::function<void(http_context *)> on_ws) {
-        _on_ws = on_ws;
-    }
-
-    void set_on_ws_close(std::function<void(struct mg_connection *)> on_ws_close)
+    void set_on_ws_close(std::function<void(const ws_conn &)> on_ws_close)
     {
         _on_ws_close = on_ws_close;
     }
@@ -258,11 +261,11 @@ public:
                 s->handle_ws_api(nc, (struct websocket_message *) ev_data);
                 break;
             case MG_EV_WEBSOCKET_HANDSHAKE_DONE:
-                s->on_ws(nc, (struct http_message *) ev_data);
+                s->handle_http_api(nc, (struct http_message *) ev_data, true);
                 break;
             case MG_EV_CLOSE:
                 if (is_websocket(nc)) {
-                    s->on_ws_close(nc);
+                    s->on_ws_close(ws_conn{ nc });
                 }
                 break;
         }

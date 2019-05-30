@@ -43,7 +43,7 @@ public:
     {
         std::string target(path == "" ? "/" : path);
         if (query.size() > 0) {
-            target.append("?" + target::encode_query(query));
+            target.append("?" + target_t::encode_query(query));
         }
         if (hash.length() > 0) {
             target.append("#" + hash);
@@ -74,7 +74,7 @@ public:
         seps.pop_front();
         string q = parse_url(url, seps);
         if (q.length() > 1) {
-            query = target::parse_query(q.substr(1, q.length() - 1));
+            query = target_t::parse_query(q.substr(1, q.length() - 1));
         }
         if (url.length() == 0) {
             return;

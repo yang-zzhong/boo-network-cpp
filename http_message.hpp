@@ -43,6 +43,7 @@ public:
     std::map<std::string, std::string> headers;
 
     http_response(int status_code) : status_code(status_code) {}
+    http_response() {}
 
     static http_response from_hm(m_http_message * hm)
     {

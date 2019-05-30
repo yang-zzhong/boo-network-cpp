@@ -22,6 +22,7 @@ class http_client
     bool _connected = false;
     bool _connecting = false;
     std::mutex _lock;
+    std::mutex _handle_lock;
 
     std::list<std::pair<http_request, std::function<void(const http_response &)>>> _requests;
 
@@ -75,6 +76,7 @@ public:
                         i = _requests.begin();
                     }
                     _lock.unlock();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
             }).detach();
         }
@@ -85,8 +87,10 @@ public:
     void send_and_handle_reply(const http_request & req, std::function<void(const http_response &)> handler)
     {
         do_send(req);
+        _handle_lock.lock();
         _handled = false;
         _handler = handler;
+        _handle_lock.unlock();
         while (!_handled) {}
     }
 
@@ -106,13 +110,12 @@ public:
 
     void send(const http_request & req, http_response & res)
     {
-        const http_response * rp = nullptr;
-        send(req, [&](const http_response & r) {
-            rp = &r;
+        bool found = false;
+        send(req, [&res, &found](const http_response & r) {
+            res = http_response(r);
+            found = true;
         });
-        while (rp == nullptr) { }
-
-        res = *rp;
+        while (!found) { }
     }
 
     void send(const http_request & req, std::function<void(const http_response & )> handler)
@@ -128,7 +131,6 @@ public:
         switch (ev) {
             case MG_EV_CONNECT:
                 if (*(int *) ev_data != 0) {
-                    std::lock_guard<std::mutex> locker(client->_lock);
                     client->_connected = false;
                 } else {
                     client->_connected = true;
@@ -136,8 +138,15 @@ public:
                 client->_connecting = false;
                 break;
             case MG_EV_HTTP_REPLY:
+                client->_handle_lock.lock();
                 client->_handler(http_response::from_hm(hm));
                 client->_handled = true;
+                client->_handle_lock.unlock();
+                break;
+            case MG_EV_CLOSE:
+                client->_lock.lock();
+                client->_connected = false;
+                client->_lock.unlock();
                 break;
         }
     }
