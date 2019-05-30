@@ -54,6 +54,7 @@ int main() {
     opts.document_root = "d:\\projects\\vod-service-3.0\\test\\html";
     s.enable_webroot(&opts);
     s.listen(8080);
+
     std::thread([&]() {
         s.poll(1000);
     }).detach();

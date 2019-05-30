@@ -20,14 +20,18 @@ class http_client
     std::function<void(const http_response &)> _handler;
     std::string _base;
     bool _connected = false;
+    bool _connecting = false;
     std::mutex _lock;
 
     std::list<std::pair<http_request, std::function<void(const http_response &)>>> _requests;
 
 public:
+    http_client()
+    {
+    }
+
     http_client(const std::string & base): _base(base)
     {
-        mg_mgr_init(&_mgr, NULL);
     }
 
     ~http_client() {
@@ -36,32 +40,46 @@ public:
         }
     }
 
+    bool connect(const std::string & base, size_t poll_interval = 10)
+    {
+        _base = base;
+        return connect(poll_interval);
+    }
 
-    void connect(size_t poll_interval = 10)
+    bool connect(size_t poll_interval = 10)
     {
         std::lock_guard<std::mutex> locker(_lock);
+        if (_base == "") {
+            throw "没有设置base";
+        }
+        mg_mgr_init(&_mgr, NULL);
         _nc = mg_connect(&_mgr, _base.c_str(), http_client::mongoose_http_ev_handler);
         mg_set_protocol_http_websocket(_nc);
         _nc->user_data = this;
-        _connected = true;
-        std::thread([&] {
-            while (_connected) {
-                _lock.lock();
-                auto i = _requests.begin();
-                while (i != _requests.end()) {
-                    send_and_handle_reply(i->first, i->second);
-                    _requests.erase(i);
-                    i = _requests.begin();
-                }
-                _lock.unlock();
-            }
-        }).detach();
+        _connecting = true;
         std::thread([&, poll_interval]() {
-            while (_connected) {
+            while (_connecting || _connected) {
                 mg_mgr_poll(&_mgr, poll_interval);
             }
             mg_mgr_free(&_mgr);
         }).detach();
+        while (_connecting) { }
+        if (_connected) {
+            std::thread([&] {
+                while (_connected) {
+                    _lock.lock();
+                    auto i = _requests.begin();
+                    while (i != _requests.end()) {
+                        send_and_handle_reply(i->first, i->second);
+                        _requests.erase(i);
+                        i = _requests.begin();
+                    }
+                    _lock.unlock();
+                }
+            }).detach();
+        }
+
+        return _connected;
     }
 
     void send_and_handle_reply(const http_request & req, std::function<void(const http_response &)> handler)
@@ -111,9 +129,11 @@ public:
             case MG_EV_CONNECT:
                 if (*(int *) ev_data != 0) {
                     std::lock_guard<std::mutex> locker(client->_lock);
-                    fprintf(stderr, "connect() failed: %s\n", strerror(*(int *) ev_data));
                     client->_connected = false;
+                } else {
+                    client->_connected = true;
                 }
+                client->_connecting = false;
                 break;
             case MG_EV_HTTP_REPLY:
                 client->_handler(http_response::from_hm(hm));

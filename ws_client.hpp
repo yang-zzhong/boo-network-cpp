@@ -19,6 +19,7 @@ class ws_client
     std::string _url;
     int _poll_interval;
     bool _connected = false;
+    bool _connecting = false;
     bool _mgr_freed = false;
     bool _handshake_done = false;
 
@@ -44,36 +45,42 @@ class ws_client
 public:
     ws_client(routing::router<std::function<void(ws_client *, const json &)>> * router) : _router(router) {} 
 
-    void connect()
+    routing::router<std::function<void(ws_client*, const json &)>> * router()
+    {
+        return _router;
+    }
+
+    bool connect()
     {
         if (_url == "") {
-            return;
+            return false;
         }
         if (_connected) {
-            return;
+            return true;
         }
         while(_mgr_freed) {}
         mg_mgr_init(&_mgr, nullptr);
         _mgr_freed = false;
+        _connecting = true;
         _nc = mg_connect_ws(&_mgr, ws_client::mongoose_ev_handler, _url.c_str(), "websocket", NULL);
         _nc->user_data = this;
-        _connected = true;
         std::thread([&]() {
-            while (_connected) {
+            while (_connecting || _connected) {
                 mg_mgr_poll(&_mgr, _poll_interval);
             }
             mg_mgr_free(&_mgr);
             _mgr_freed = true;
         }).detach();
-        while (!_handshake_done) { }
-        _handshake_done = false;
+        while (_connecting) { }
+
+        return _connected;
     }
 
-    void connect(const std::string & url, int poll_interval = 10)
+    bool connect(const std::string & url, int poll_interval = 10)
     {
         _url = url;
         _poll_interval = poll_interval;
-        connect();
+        return connect();
     }
 
     void send(const json & data)
@@ -98,8 +105,10 @@ public:
                 int status = *((int *) ev_data);
                 if (status != 0) {
                     client->_connected = false;
-                    client->connect();
+                } else {
+                    client->_connected = true;
                 }
+                client->_connecting = false;
                 break;
             }
             case MG_EV_WEBSOCKET_HANDSHAKE_DONE: {
