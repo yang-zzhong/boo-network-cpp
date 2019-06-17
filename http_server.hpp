@@ -8,6 +8,8 @@
 #include <string>
 #include <functional>
 #include <map>
+#include <list>
+#include <mutex>
 
 using m_http_message = struct http_message;
 
@@ -18,17 +20,34 @@ using nlohmann::json;
 class http_server {
 
 public:
+
 class http_context {
     struct mg_connection * _nc;
+    m_http_message * _hm;
     http_request * _req;
+    http_server * _server = nullptr;
     bool _is_websocket_handshake_done = false;
 public:
-    http_context(struct mg_connection * nc, http_request * r): _nc(nc), _req(r)
+    http_context(struct mg_connection * nc, http_request * r, m_http_message * hm): _nc(nc), _req(r), _hm(hm)
     {
+    }
+
+    void set_server(http_server * s)
+    {
+        _server = s;
+    }
+
+    http_server * server()
+    {
+        return _server;
     }
 
     mg_connection * conn() {
         return _nc;
+    }
+
+    m_http_message * hm() {
+        return _hm;
     }
 
     http_request * req() {
@@ -47,6 +66,11 @@ public:
     bool is_websocket_handshake_done()
     {
         return _is_websocket_handshake_done;
+    }
+
+    void send(const char * buf, int size)
+    {
+        mg_send(_nc, buf, size);
     }
 
     void send(const http_response & res)
@@ -74,6 +98,39 @@ public:
         out << body;
 
         send(status_code, out.str(), &hs);
+    }
+
+    void send_header(int status_code, std::map<std::string, std::string> * headers = nullptr)
+    {
+        return send_header(status_code, -1, headers);
+    }
+
+    void send_header(int status_code, int size, std::map<std::string, std::string> * headers = nullptr)
+    {
+        if (_nc == nullptr) {
+            throw "没有建立连接";
+        }
+        std::string header;
+        if (headers != nullptr) {
+            int idx = 0;
+            for (auto i = headers->begin(); i != headers->end(); ++i) {
+                header += i->first + ": " + i->second;
+                if (idx++ < headers->size() - 1) {
+                    header += "\r\n";
+                }
+            }
+        }
+        mg_send_head(_nc, status_code, size, header.c_str());
+    }
+
+    void send_chunk(const char * buf, int len)
+    {
+        mg_send_http_chunk(_nc, buf, len);
+    }
+
+    void send_chunk_end()
+    {
+        mg_send_http_chunk(_nc, "", 0);
     }
 
     void send(int status_code, const std::string & body, std::map<std::string, std::string> * headers = nullptr)
@@ -104,6 +161,16 @@ public:
     }
 };
 
+class send_next_t {
+public:
+    virtual void send(struct mg_connection * _nc) = 0;
+    virtual bool send_complete() = 0;
+    virtual void send_ok(struct mg_connection * _nc) = 0;
+    virtual void close() = 0;
+    virtual ~send_next_t() {};
+};
+
+
 class ws_conn {
     struct mg_connection * _nc;
     bool _valid_req = true;
@@ -124,8 +191,14 @@ public:
         mg_send_websocket_frame(_nc, WEBSOCKET_OP_TEXT, msg.c_str(), msg.length());
     }
 
-    bool operator == (const ws_conn & ws) {
+    bool eq(const ws_conn & ws) const
+    {
         return _nc == ws._nc;
+    }
+
+    bool eq(const ws_conn * ws) const
+    {
+        return _nc == ws->_nc;
     }
 };
 
@@ -135,12 +208,15 @@ private:
     routing::router<function<void(http_context *, routing::params *)>> * _http_router = nullptr;
 
     struct mg_connection * _nc = nullptr;
-    std::function<void(const ws_conn &)> _on_ws_close;
+    std::function<void(const ws_conn &)> _on_ws_close = nullptr;
+    std::function<void(http_server * s, mg_connection * conn)> _on_http_close = nullptr;
 
     bool _stop = false;
     bool _ws_enabled = false;
     bool _webroot_enabled = false;
     bool _http_api_enabled = false;
+
+    std::map<struct mg_connection *, send_next_t *> _send_next;
 
     struct mg_serve_http_opts * _webroot_opts;
 
@@ -148,19 +224,38 @@ private:
         return nc->flags & MG_F_IS_WEBSOCKET;
     };
 
-    void stop() {
-        _stop = true;
-    }
-
     void on_ws_close(const ws_conn & ws) {
         if (_on_ws_close != nullptr) {
             _on_ws_close(ws);
         }
     };
-    
+
+    void on_http_close(mg_connection * nc) {
+        if (_send_next.find(nc) != _send_next.end()) {
+            _send_next[nc]->close();
+            delete _send_next[nc];
+            _send_next.erase(nc);
+        }
+        if (_on_http_close != nullptr) {
+            _on_http_close(this, nc);
+        }
+    }
+
 public:
     http_server()
     {
+    }
+
+    void reg_send_next(struct mg_connection * nc, send_next_t * send_next)
+    {
+        if (_send_next.find(nc) != _send_next.end()) {
+            delete _send_next[nc];
+        }
+        _send_next[nc] = send_next;
+    }
+
+    void stop() {
+        _stop = true;
     }
 
     void enable_ws(routing::router<function<void(ws_conn *, const json &)>> * router)
@@ -194,7 +289,8 @@ public:
         _http_router->route(routing::concat_method_path(req.method, req.target.path()), &p,
             [&](bool path_found, routing::params * p,  function<void(http_context *, routing::params *)> callback) {
 
-            http_context ctx(nc, &req);
+            http_context ctx(nc, &req, hm);
+            ctx.set_server(this);
             ctx.set_websocket_handshake_done(is_websocket);
             if (path_found && callback != nullptr) {
                 callback(&ctx, p);
@@ -249,10 +345,31 @@ public:
         _on_ws_close = on_ws_close;
     }
 
+    void set_on_http_close(std::function<void(http_server * s, mg_connection * nc)> on_http_close)
+    {
+        _on_http_close = on_http_close;
+    }
+
+    void handle_send_next(struct mg_connection * nc)
+    {
+        if (_send_next.find(nc) == _send_next.end()) {
+            return;
+        }
+        auto sender = _send_next[nc];
+        if (!sender->send_complete()) {
+            sender->send(nc);
+            return;
+        } 
+        sender->send_ok(nc);
+        sender->close();
+        delete sender;
+        _send_next.erase(nc);
+    }
 
     static void mongoose_http_ev_handler(struct mg_connection *nc, int ev, void *ev_data)
     {
         auto s = (http_server*)nc->user_data;
+        s->handle_send_next(nc);
         switch (ev) {
             case MG_EV_HTTP_REQUEST:
                 s->handle_http_api(nc, (struct http_message *) ev_data);
@@ -266,6 +383,8 @@ public:
             case MG_EV_CLOSE:
                 if (is_websocket(nc)) {
                     s->on_ws_close(ws_conn{ nc });
+                } else {
+                    s->on_http_close(nc);
                 }
                 break;
         }
@@ -275,7 +394,9 @@ public:
     {
         /* Open listening socket */
         mg_mgr_init(&_mgr, NULL);
-        auto nc = mg_bind(&_mgr, ":8080", http_server::mongoose_http_ev_handler);
+        std::string addr(":");
+        addr.append(std::to_string(port));
+        auto nc = mg_bind(&_mgr, addr.c_str(), http_server::mongoose_http_ev_handler);
         nc->user_data = this;
         mg_set_protocol_http_websocket(nc);
     }

@@ -56,13 +56,13 @@ int main() {
     });
     opts.document_root = "d:\\projects\\vod-service-3.0\\test\\html";
     s.enable_webroot(&opts);
-    s.listen(8080);
+    s.listen(8111);
 
     std::thread([&]() {
         s.poll(1000);
     }).detach();
 
-    http_client client("127.0.0.1:8080");
+    http_client client("127.0.0.1:8111");
     client.connect();
     http_request req("hello-world", "GET");
     req.headers["hello-world"] = "hello world";
