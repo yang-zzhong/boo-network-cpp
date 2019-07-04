@@ -17,6 +17,7 @@ public:
     std::string method;
 
     http_request(const std::string & u, const std::string & m): target(u), method(m) {}
+    http_request() {}
 
     static http_request from_hm(m_http_message * hm)
     {

@@ -9,7 +9,6 @@
 #include <functional>
 #include <map>
 #include <list>
-#include <mutex>
 
 using m_http_message = struct http_message;
 
@@ -108,7 +107,7 @@ public:
     void send_header(int status_code, int size, std::map<std::string, std::string> * headers = nullptr)
     {
         if (_nc == nullptr) {
-            throw "没有建立连接";
+            throw "has no connection";
         }
         std::string header;
         if (headers != nullptr) {
@@ -135,29 +134,9 @@ public:
 
     void send(int status_code, const std::string & body, std::map<std::string, std::string> * headers = nullptr)
     {
-        if (_nc == nullptr) {
-            throw "没有建立连接";
-        }
-        std::string header;
-        bool chunk = false;
-        if (headers != nullptr) {
-            chunk = headers->find("Transfer-Encoding") != headers->end() && (*headers)["Transfer-Encoding"] == "chunked";
-            int idx = 0;
-            for (auto i = headers->begin(); i != headers->end(); ++i) {
-                header += i->first + ": " + i->second;
-                if (idx++ < headers->size() - 1) {
-                    header += "\r\n";
-                }
-            }
-        }
-        if (!chunk) {
-            mg_send_head(_nc, status_code, body.length(), header.c_str());
-            mg_printf(_nc, "%s", body.c_str());
-            return;
-        }
-        mg_send_head(_nc, status_code, -1, header.c_str());
-        mg_printf_http_chunk(_nc, "%s", body.c_str());
-        mg_send_http_chunk(_nc, "", 0);
+        send_header(status_code, headers);
+        send_chunk(body.c_str(), body.length());
+        send_chunk_end();
     }
 };
 
@@ -167,7 +146,6 @@ public:
     virtual bool send_complete() = 0;
     virtual void send_ok(struct mg_connection * _nc) = 0;
     virtual void close() = 0;
-    virtual ~send_next_t() {};
 };
 
 
@@ -212,9 +190,11 @@ private:
     std::function<void(http_server * s, mg_connection * conn)> _on_http_close = nullptr;
 
     bool _stop = false;
+    bool _stoped = false;
     bool _ws_enabled = false;
     bool _webroot_enabled = false;
     bool _http_api_enabled = false;
+    bool _listening = false;
 
     std::map<struct mg_connection *, send_next_t *> _send_next;
 
@@ -256,6 +236,7 @@ public:
 
     void stop() {
         _stop = true;
+        while(_stoped) {}
     }
 
     void enable_ws(routing::router<function<void(ws_conn *, const json &)>> * router)
@@ -296,7 +277,7 @@ public:
                 callback(&ctx, p);
                 return;
             }
-            if (_webroot_enabled) {
+            if (_webroot_enabled && req.method == "GET") {
                 return handle_webroot(nc, hm);
             }
             mg_http_send_error(nc, 404, "not found");
@@ -368,7 +349,7 @@ public:
 
     static void mongoose_http_ev_handler(struct mg_connection *nc, int ev, void *ev_data)
     {
-        auto s = (http_server*)nc->user_data;
+        auto s = (http_server*)(nc->user_data);
         s->handle_send_next(nc);
         switch (ev) {
             case MG_EV_HTTP_REQUEST:
@@ -394,19 +375,25 @@ public:
     {
         /* Open listening socket */
         mg_mgr_init(&_mgr, NULL);
-        std::string addr(":");
-        addr.append(std::to_string(port));
-        auto nc = mg_bind(&_mgr, addr.c_str(), http_server::mongoose_http_ev_handler);
+        char addr[16];
+        sprintf(addr, ":%d", port);
+        auto nc = mg_bind(&_mgr, addr, http_server::mongoose_http_ev_handler);
         nc->user_data = this;
         mg_set_protocol_http_websocket(nc);
+        _listening = true;
     }
 
     void poll(size_t interval = 10)
     {
+        if (!_listening) {
+            throw "not listening port";
+        }
+        _stoped = false;
         while (!_stop) {
             mg_mgr_poll(&_mgr, interval);
         }
         mg_mgr_free(&_mgr);
+        _stoped = true;
     }
 
     ~http_server()

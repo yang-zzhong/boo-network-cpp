@@ -21,6 +21,8 @@ class http_client
     std::string _base;
     bool _connected = false;
     bool _connecting = false;
+    bool _stopped = false;
+    bool _mbr_valid = false;
     std::mutex _lock;
     std::mutex _handle_lock;
 
@@ -53,7 +55,10 @@ public:
         if (_base == "") {
             throw "没有设置base";
         }
-        mg_mgr_init(&_mgr, NULL);
+        if (!_mbr_valid) {
+            mg_mgr_init(&_mgr, NULL);
+            _mbr_valid = true;
+        }
         _nc = mg_connect(&_mgr, _base.c_str(), http_client::mongoose_http_ev_handler);
         mg_set_protocol_http_websocket(_nc);
         _nc->user_data = this;
@@ -63,10 +68,12 @@ public:
                 mg_mgr_poll(&_mgr, poll_interval);
             }
             mg_mgr_free(&_mgr);
+            _mbr_valid = false;
         }).detach();
         while (_connecting) { }
         if (_connected) {
             std::thread([&] {
+                _stopped = false;
                 while (_connected) {
                     _lock.lock();
                     auto i = _requests.begin();
@@ -78,10 +85,20 @@ public:
                     _lock.unlock();
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
+                _stopped = true;
             }).detach();
         }
 
         return _connected;
+    }
+
+    void disconnect()
+    {
+        if (_connected) {
+            _connected = false;
+            _nc->flags |= MG_F_CLOSE_IMMEDIATELY;
+        }
+        while(!_stopped || _mbr_valid) {}
     }
 
     void send_and_handle_reply(const http_request & req, std::function<void(const http_response &)> handler)

@@ -19,8 +19,11 @@ using nlohmann::json;
 
 static mg_serve_http_opts opts;
 
-int main() {
-    routing::router<std::function<void(http_server::http_context *, routing::params * p)>> http_router;
+http_server s;
+routing::router<std::function<void(http_server::http_context *, routing::params * p)>> http_router;
+routing::router<std::function<void(http_server::ws_conn *, const json &)>> ws_router;
+
+void start_server(int port) {
     http_router.on(routing::get, "/hello-world", [](http_server::http_context * ctx, routing::params * p) {
         auto req = ctx->req();
         printf("an\\\\\\\\\\\\\\\\\\\\\\\\\---\---\n");
@@ -40,7 +43,6 @@ int main() {
         data["method"] = "POST";
         wctx.send(data);
     });
-    routing::router<std::function<void(http_server::ws_conn *, const json &)>> ws_router;
     ws_router.on(routing::post, "hello-world", [](http_server::ws_conn * conn, const json & data) {
         printf("server receive ws hello-world\n");
         json msg;
@@ -48,7 +50,6 @@ int main() {
         msg["data"] = "hello world";
         conn->send(msg);
     });
-    http_server s;
     s.enable_http_api(&http_router);
     s.enable_ws(&ws_router);
     s.set_on_ws_close([](const http_server::ws_conn &) {
@@ -56,35 +57,45 @@ int main() {
     });
     opts.document_root = "d:\\projects\\vod-service-3.0\\test\\html";
     s.enable_webroot(&opts);
-    s.listen(8111);
+    s.listen(port);
 
     std::thread([&]() {
         s.poll(1000);
     }).detach();
+}
 
-    http_client client("127.0.0.1:8111");
-    client.connect();
-    http_request req("hello-world", "GET");
-    req.headers["hello-world"] = "hello world";
-    req.body = "hello world";
-
-    for (int i = 0; i < 100; ++i) {
-        http_response hm;
-        client.send(req, [](const http_response & hm) {
-            printf("reply: %s\n", hm.body.c_str());
-        });
+void send_http(const std::string & base, const http_request & req) {
+    http_client client(base);
+    if (!client.connect()) {
+        std::cout << "connect error" << std::endl;
+        return;
     }
+    http_response hm;
+    client.send(req, hm);
+    std::cout << hm.body << std::endl;
+    client.disconnect();
+}
 
+void send_ws() {
     routing::router<std::function<void(ws_client*, const json &)>> client_ws_router;
     client_ws_router.on("/hello-world", [](ws_client * c, const json & msg) {
         printf("client receive hello world\n");
         printf(msg["data"].get<std::string>().c_str());
     });
     ws_client c(&client_ws_router);
-    c.connect("ws://127.0.0.1:8080/ws/A01?client_type=control&client_source=vod");
+    c.connect("ws://127.0.0.1:8800/ws/A01?client_type=control&client_source=vod");
     json msg;
     msg["id"] = "/hello-world";
     msg["method"] = "POST";
     c.send(msg);
-    for(;;) {}
+}
+
+int main() {
+    start_server(8111);
+    http_request req("/hello-world", "POST");
+    auto base = "127.0.0.1:8800";
+    send_http(base, req);
+    std::cout << "client out" << std::endl;
+
+    return 0;
 }
