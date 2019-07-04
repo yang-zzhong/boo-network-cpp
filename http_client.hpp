@@ -21,7 +21,7 @@ class http_client
     std::string _base;
     bool _connected = false;
     bool _connecting = false;
-    bool _stopped = false;
+    bool _stopped = true;
     bool _mbr_valid = false;
     std::mutex _lock;
     std::mutex _handle_lock;
@@ -125,20 +125,30 @@ public:
         mg_printf(_nc, "%s", msg.c_str());
     }
 
-    void send(const http_request & req, http_response & res)
+    bool send(const http_request & req, http_response & res)
     {
         bool found = false;
-        send(req, [&res, &found](const http_response & r) {
+        auto queued = send(req, [&res, &found](const http_response & r) {
             res = http_response(r);
             found = true;
         });
-        while (!found) { }
+        if (queued) {
+            while (!found) { }
+        }
+        return queued;
     }
 
-    void send(const http_request & req, std::function<void(const http_response & )> handler)
+    bool send(const http_request & req, std::function<void(const http_response & )> handler)
     {
-        std::lock_guard<std::mutex> locker(_lock);
-        _requests.push_back(std::pair<http_request, std::function<void(const http_response &)>>(req, handler));
+        if (!_connected) {
+            disconnect();
+            connect();
+        }
+        if (_connected) {
+            std::lock_guard<std::mutex> locker(_lock);
+            _requests.push_back(std::pair<http_request, std::function<void(const http_response &)>>(req, handler));
+        }
+        return _connected;
     }
 
     static void mongoose_http_ev_handler(struct mg_connection *nc, int ev, void *ev_data)

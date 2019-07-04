@@ -22,6 +22,7 @@ class ws_client
     bool _connecting = false;
     bool _mgr_freed = false;
     bool _handshake_done = false;
+    bool _reconnect_when_closed = false;
 
     routing::router<std::function<void(ws_client*, const json &)>> * _router;
 
@@ -48,6 +49,11 @@ public:
     routing::router<std::function<void(ws_client*, const json &)>> * router()
     {
         return _router;
+    }
+
+    void reconnect_when_closed(bool reconnect = true)
+    {
+        _reconnect_when_closed = reconnect;
     }
 
     bool connect()
@@ -119,10 +125,16 @@ public:
                }
                break;
             }
-            case MG_EV_WEBSOCKET_FRAME: 
+            case MG_EV_WEBSOCKET_FRAME: {
                 struct websocket_message *wm = (struct websocket_message *) ev_data;
                 std::string msg((const char *)wm->data, wm->size);
                 client->route(json::parse(msg));
+                break;
+            }
+            case MG_EV_CLOSE:
+                if (client->_reconnect_when_closed) {
+                    client->connect();
+                }
                 break;
         }
     }

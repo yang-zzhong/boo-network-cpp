@@ -66,10 +66,10 @@ void start_server(int port) {
 
 void send_http(const std::string & base, const http_request & req) {
     http_client client(base);
-    if (!client.connect()) {
-        std::cout << "connect error" << std::endl;
-        return;
-    }
+    // if (!client.connect()) {
+    //     std::cout << "connect error" << std::endl;
+    //     return;
+    // }
     http_response hm;
     client.send(req, hm);
     std::cout << hm.body << std::endl;
