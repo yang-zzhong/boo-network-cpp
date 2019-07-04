@@ -104,30 +104,6 @@ public:
         while(!_stopped || _mbr_valid) {}
     }
 
-    void send_and_handle_reply(const http_request & req, std::function<void(const http_response &)> handler)
-    {
-        do_send(req);
-        _handle_lock.lock();
-        _handled = false;
-        _handler = handler;
-        _handle_lock.unlock();
-        while (!_handled) {}
-    }
-
-    void do_send(const http_request & req)
-    {
-        std::string msg = req.method + " " + req.target.str() + " HTTP/1.1\r\n";
-        for (auto i = req.headers.begin(); i != req.headers.end(); ++i) {
-            msg += i->first + ":" + i->second + "\r\n";
-        }
-        msg += "Host:" + _base + "\r\n";
-        msg += "Content-Length: " + std::to_string(req.body.length()) + "\r\n";
-        msg += "\r\n";
-        msg += req.body + "\r\n";
-
-        mg_printf(_nc, "%s", msg.c_str());
-    }
-
     bool send(const http_request & req, http_response & res)
     {
         bool found = false;
@@ -154,6 +130,27 @@ public:
         return _connected;
     }
 
+    static bool send(const std::string & base, const http_request & req, std::function<void(const http_response &)> handler)
+    {
+        auto client = new http_client(base);
+        return client->send(req, [client, handler](const http_response & res) {
+            handler(res);
+            client->disconnect();
+            delete client;
+        });
+    }
+
+    static bool send(const std::string & base, const http_request & req, http_response & res)
+    {
+        http_client client(base);
+        if (!client.send(req, res)) {
+            return false;
+        }
+        client.disconnect();
+        return true;
+    }
+
+private:
     static void mongoose_http_ev_handler(struct mg_connection *nc, int ev, void *ev_data)
     {
         auto client = (http_client *)nc->user_data;
@@ -179,6 +176,30 @@ public:
                 client->_lock.unlock();
                 break;
         }
+    }
+
+    void send_and_handle_reply(const http_request & req, std::function<void(const http_response &)> handler)
+    {
+        do_send(req);
+        _handle_lock.lock();
+        _handled = false;
+        _handler = handler;
+        _handle_lock.unlock();
+        while (!_handled) {}
+    }
+
+    void do_send(const http_request & req)
+    {
+        std::string msg = req.method + " " + req.target.str() + " HTTP/1.1\r\n";
+        for (auto i = req.headers.begin(); i != req.headers.end(); ++i) {
+            msg += i->first + ":" + i->second + "\r\n";
+        }
+        msg += "Host:" + _base + "\r\n";
+        msg += "Content-Length: " + std::to_string(req.body.length()) + "\r\n";
+        msg += "\r\n";
+        msg += req.body + "\r\n";
+
+        mg_printf(_nc, "%s", msg.c_str());
     }
 };
 
