@@ -55,6 +55,9 @@ public:
         if (_base == "") {
             throw "没有设置base";
         }
+        if (_connecting || _connected) {
+            return true;
+        }
         if (!_mbr_valid) {
             mg_mgr_init(&_mgr, NULL);
             _mbr_valid = true;

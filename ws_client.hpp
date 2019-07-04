@@ -20,7 +20,7 @@ class ws_client
     int _poll_interval;
     bool _connected = false;
     bool _connecting = false;
-    bool _mgr_freed = false;
+    bool _stopped = false;
     bool _handshake_done = false;
     bool _reconnect_when_closed = false;
 
@@ -61,21 +61,16 @@ public:
         if (_url == "") {
             return false;
         }
-        if (_connected) {
+        if (_connecting || _connected) {
             return true;
         }
-        while(_mgr_freed) {}
-        mg_mgr_init(&_mgr, nullptr);
-        _mgr_freed = false;
-        _connecting = true;
-        _nc = mg_connect_ws(&_mgr, ws_client::mongoose_ev_handler, _url.c_str(), "websocket", NULL);
-        _nc->user_data = this;
+        if (!do_connect()) {
+            return false;
+        }
         std::thread([&]() {
-            while (_connecting || _connected) {
+            while (!_stopped) {
                 mg_mgr_poll(&_mgr, _poll_interval);
             }
-            mg_mgr_free(&_mgr);
-            _mgr_freed = true;
         }).detach();
         while (_connecting) { }
 
@@ -100,7 +95,33 @@ public:
 
     ~ws_client()
     {
+        _stopped = true;
         _connected = false;
+    }
+private:
+    bool do_connect()
+    {
+        _connecting = false;
+        mg_mgr_init(&_mgr, nullptr);
+        _nc = mg_connect_ws(&_mgr, ws_client::mongoose_ev_handler, _url.c_str(), "websocket", NULL);
+        if (_nc == nullptr) {
+            return false;
+        }
+        _nc->user_data = this;
+        _connecting = true;
+        return true;
+    }
+
+    void reconnect()
+    {
+        if (_stopped) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        mg_mgr_free(&_mgr);
+        if (!do_connect()) {
+            mg_mgr_free(&_mgr);
+        }
     }
 
     static void mongoose_ev_handler(struct mg_connection *nc, int ev, void *ev_data)
@@ -132,8 +153,9 @@ public:
                 break;
             }
             case MG_EV_CLOSE:
+                client->_connected = false;
                 if (client->_reconnect_when_closed) {
-                    client->connect();
+                    client->reconnect();
                 }
                 break;
         }
