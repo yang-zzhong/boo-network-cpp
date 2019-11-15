@@ -4,13 +4,12 @@
 #include "routing.hpp"
 #include "3rd/json.hpp"
 #include <string>
+#include <mutex>
+#include <list>
 #include <thread>
 #include <sstream>
 
 namespace boo { namespace network {
-
-using boo::network::routing;
-using nlohmann::json;
 
 class ws_client 
 {
@@ -18,24 +17,26 @@ class ws_client
     mg_connection * _nc = nullptr;
     std::string _url;
     int _poll_interval;
+    std::list<nlohmann::json> _send_queues;
+    std::mutex _send_lock;
     bool _connected = false;
     bool _connecting = false;
     bool _stopped = false;
     bool _handshake_done = false;
     bool _reconnect_when_closed = false;
 
-    routing::router<std::function<void(ws_client*, const json &)>> * _router;
+    boo::network::routing::router<std::function<void(ws_client*, const nlohmann::json &)>> * _router;
 
-    void route(const json & msg) {
+    void route(const nlohmann::json & msg) {
         if (msg.find("id") == msg.end()) {
             return;
         }
         auto path = msg["id"].get<std::string>();
         if (msg.find("method") != msg.end()) {
-            path = routing::concat_method_path(msg["method"].get<std::string>(), path);
+            path = boo::network::routing::concat_method_path(msg["method"].get<std::string>(), path);
         }
-        routing::params p;
-        _router->route(path, &p, [&](bool pathfound, routing::params * p, std::function<void(ws_client *, const json &)> callback) {
+        boo::network::routing::params p;
+        _router->route(path, &p, [&](bool pathfound, boo::network::routing::params * p, std::function<void(ws_client *, const nlohmann::json &)> callback) {
             if (pathfound && callback != nullptr) {
                 callback(this, msg);
                 return;
@@ -44,9 +45,9 @@ class ws_client
     }
 
 public:
-    ws_client(routing::router<std::function<void(ws_client *, const json &)>> * router) : _router(router) {} 
+    ws_client(boo::network::routing::router<std::function<void(ws_client *, const nlohmann::json &)>> * router) : _router(router) {} 
 
-    routing::router<std::function<void(ws_client*, const json &)>> * router()
+    boo::network::routing::router<std::function<void(ws_client*, const nlohmann::json &)>> * router()
     {
         return _router;
     }
@@ -68,12 +69,20 @@ public:
             return false;
         }
         std::thread([&]() {
-            while (!_stopped) {
+            while (_connecting) {
                 mg_mgr_poll(&_mgr, _poll_interval);
             }
         }).detach();
-        while (_connecting) { }
-
+        while (_connecting) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        if (_connected) {
+            std::thread([&]() {
+                while (!_stopped) {
+                    mg_mgr_poll(&_mgr, _poll_interval);
+                }
+            }).detach();
+        }
         return _connected;
     }
 
@@ -84,13 +93,30 @@ public:
         return connect();
     }
 
-    void send(const json & data)
+    void send(const nlohmann::json & msg)
+    {
+        _send_lock.lock();
+        _send_queues.push_back(msg);
+        _send_lock.unlock();
+    }
+
+    void do_send(const nlohmann::json & data)
     {
         std::stringstream out;
         out << data;
         std::string msg = out.str();
 
         mg_send_websocket_frame(_nc, WEBSOCKET_OP_TEXT, msg.c_str(), msg.length());
+    }
+
+    void handle_send_queue()
+    {
+        _send_lock.lock();
+        for (auto i = _send_queues.begin(); i != _send_queues.end(); ++i) {
+            do_send(*i);
+        }
+        _send_queues.clear();
+        _send_lock.unlock();
     }
 
     ~ws_client()
@@ -127,6 +153,7 @@ private:
     static void mongoose_ev_handler(struct mg_connection *nc, int ev, void *ev_data)
     {
         auto client = (ws_client*) nc->user_data;
+        client->handle_send_queue();
         switch (ev) {
             case MG_EV_CONNECT: {
                 int status = *((int *) ev_data);
@@ -149,7 +176,7 @@ private:
             case MG_EV_WEBSOCKET_FRAME: {
                 struct websocket_message *wm = (struct websocket_message *) ev_data;
                 std::string msg((const char *)wm->data, wm->size);
-                client->route(json::parse(msg));
+                client->route(nlohmann::json::parse(msg));
                 break;
             }
             case MG_EV_CLOSE:

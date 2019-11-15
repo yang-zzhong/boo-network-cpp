@@ -1,18 +1,20 @@
 #pragma once
 
 #include <string>
+#include <sstream>
 #include <functional>
 #include <memory>
 #include <vector>
 #include <map>
-
-namespace boo { namespace network {
+#include <cstdlib>
 
 using namespace std;
 
 class routing {
+
     class param
     {
+        string _val;
     public:
         param() {}
         param(string val) : _val(val) {}
@@ -21,24 +23,29 @@ class routing {
         {
             return atoi(_val.c_str());
         }
+        int32_t to_int32()
+        {
+            return to_int();
+        }
         double to_double()
         {
             return atof(_val.c_str());
         }
         bool to_bool()
         {
-            if (_val == "TRUE" || _val == "true" || _val != "0") {
-                return true;
-            }
-            return false;
+            return _val == "TRUE" || _val == "true" || _val != "0" || _val != "";
         }
-        string to_string()
+        uint64_t to_uint64()
+        {
+            uint64_t value;
+            std::istringstream iss(_val);
+            iss >> value;
+            return value;
+        }
+        const string & to_string()
         {
             return _val;
         }
-
-    private:
-        string _val;
     };
 
 public:
@@ -94,6 +101,9 @@ public:
     static std::string concat_method_path(const std::string & m, const std::string & path)
     {
         std::string tpath = path;
+        if (tpath.length() == 0) {
+            tpath = "/";
+        }
         if (tpath.at(tpath.length() - 1) != '/') {
             tpath.append("/");
         }
@@ -153,6 +163,7 @@ private:
                         return n;
                     }
                     break;
+                default: break;
                 }
                 n = n->right;
             }
@@ -165,7 +176,7 @@ private:
             vector<shared_ptr<node<callback_t>>> ret;
             auto n = left;
             while (n != nullptr) {
-                if (n->is == is_a::a_path && path == n->path || n->is == a_param) {
+                if ((n->is == is_a::a_path && path == n->path) || n->is == a_param) {
                     ret.push_back(n);
                 }
                 n = n->right;
@@ -198,7 +209,7 @@ private:
             }
 
             return nullptr;
-        };
+        }
     public:
         is_a is = a_unknown;
 
@@ -227,8 +238,7 @@ public:
                 if (s[0] == '{' && s[s.length() - 1] == '}') {
                     c->is = is_a::a_param;
                     c->path = s.substr(1, s.length() - 2);
-                }
-                else {
+                } else {
                     c->is = is_a::a_path;
                     c->path = s;
                 }
@@ -257,7 +267,9 @@ public:
 
         void on(int id, callback_t on)
         {
-            this->on(std::to_string(id), on);
+            char buf[16];
+            sprintf(buf, "%d", id);
+            this->on(buf, on);
         }
 
         void un(routing::method m, const std::string & path)
@@ -285,28 +297,32 @@ public:
     
         void route(int id, r_callback_t r_callback)
         {
+            char buf[16];
+            sprintf(buf, "%d", id);
             params p;
-            route(std::to_string(id), &p, r_callback);
+            route(buf, &p, r_callback);
         }
 
-        void route(method m, string path, params * p, r_callback_t r_callback)
+        void route(method m, const string & path, params * p, r_callback_t r_callback)
         {
             route(concat_method_path(m, path), p, r_callback);
         }
 
-        void route(string path, params * p, r_callback_t r_callback)
+        void route(const string & path, params * p, r_callback_t r_callback)
         {
             vector<shared_ptr<node<callback_t>>> ns = match_path(path, p);
             if (ns.size() == 0) {
                 r_callback(false, p, nullptr);
                 return;
             }
-            auto c = ns[0]->find_callback_child();
-            if (c == nullptr) {
-                r_callback(false, p, nullptr);
-                return;
+            for (auto i = ns.begin(); i != ns.end(); ++i) {
+                auto c = (*i)->find_callback_child();
+                if (c != nullptr) {
+                    r_callback(true, p, c->callback);
+                    return;
+                }
             }
-            r_callback(true, p, c->callback);
+            r_callback(false, p, nullptr);
         }
     
     private:
@@ -358,34 +374,31 @@ public:
             return ends;
         }
     
-        //
-        // 假设有
-        //
-        // POST         /hello/world
-        // GET          /hello/world
-        // GET          /hello
-        // DELETE       /hello
-        // 
-        // 这棵树会是这个样子
-        //
-        //                              HEAD
-        //                               |
-        //                             hello
-        //                             / | \
-        //                            /  |  \
-        //                           /   |   \
-        //                      world   GET  DELETE
-        //                       / \     \        \
-        //                      /   \     \        \
-        //                   POST   GET CALLBACK  CALLBACK
-        //                    /       \
-        //                CALLBACK  CALLBACK
-        // 
-        //
+        /*
+        *  假设有
+        *
+        *  POST         /hello/world
+        *  GET          /hello/world
+        *  GET          /hello
+        *  DELETE       /hello
+        *
+        *  这棵树会是这个样子
+        *
+        *                               HEAD
+        *                                |
+        *                              hello
+        *                              / | \
+        *                             /  |  \
+        *                            /   |   \
+        *                       world   GET  DELETE
+        *                        / \     \        \
+        *                       /   \     \        \
+        *                    POST   GET CALLBACK  CALLBACK
+        *                     /       \
+        *                 CALLBACK  CALLBACK
+        *
+        */
         shared_ptr<node<callback_t>> _head = std::make_shared<node<callback_t>>();
     };
 
 };
-
-} } // vod::network::routing
-

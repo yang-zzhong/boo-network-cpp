@@ -18,11 +18,13 @@ class http_client
     struct mg_connection * _nc = nullptr;
     bool _handled = false;
     std::function<void(const http_response &)> _handler;
+    std::list<http_request> _send_queues;
     std::string _base;
     bool _connected = false;
     bool _connecting = false;
     bool _stopped = true;
     bool _mbr_valid = false;
+    std::mutex _send_lock;
     std::mutex _lock;
     std::mutex _handle_lock;
 
@@ -63,6 +65,9 @@ public:
             _mbr_valid = true;
         }
         _nc = mg_connect(&_mgr, _base.c_str(), http_client::mongoose_http_ev_handler);
+        if (_nc == nullptr) {
+            return false;
+        }
         mg_set_protocol_http_websocket(_nc);
         _nc->user_data = this;
         _connecting = true;
@@ -73,7 +78,9 @@ public:
             mg_mgr_free(&_mgr);
             _mbr_valid = false;
         }).detach();
-        while (_connecting) { }
+        while (_connecting) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         if (_connected) {
             std::thread([&] {
                 _stopped = false;
@@ -101,8 +108,11 @@ public:
             _connected = false;
             _nc->flags |= MG_F_CLOSE_IMMEDIATELY;
         }
-        while(!_stopped || _mbr_valid) {}
+        while(!_stopped || _mbr_valid) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
     }
+
 
     bool send(const http_request & req, http_response & res)
     {
@@ -112,7 +122,9 @@ public:
             found = true;
         });
         if (queued) {
-            while (!found) { }
+            while (!found) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
         }
         return queued;
     }
@@ -144,6 +156,7 @@ public:
     {
         http_client client(base);
         if (!client.send(req, res)) {
+            client.disconnect();
             return false;
         }
         client.disconnect();
@@ -154,16 +167,19 @@ private:
     static void mongoose_http_ev_handler(struct mg_connection *nc, int ev, void *ev_data)
     {
         auto client = (http_client *)nc->user_data;
+        client->handle_send_queue();
         struct http_message *hm = (struct http_message *)ev_data;
         switch (ev) {
-            case MG_EV_CONNECT:
-                if (*(int *) ev_data != 0) {
+            case MG_EV_CONNECT: {
+                int code = *(int *)ev_data;
+                if (code != 0) {
                     client->_connected = false;
                 } else {
                     client->_connected = true;
                 }
                 client->_connecting = false;
-                break;
+            }
+            break;
             case MG_EV_HTTP_REPLY:
                 client->_handle_lock.lock();
                 client->_handler(http_response::from_hm(hm));
@@ -180,12 +196,31 @@ private:
 
     void send_and_handle_reply(const http_request & req, std::function<void(const http_response &)> handler)
     {
-        do_send(req);
+        push_to_send(req);
         _handle_lock.lock();
         _handled = false;
         _handler = handler;
         _handle_lock.unlock();
-        while (!_handled) {}
+        while (!_handled) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
+    void push_to_send(const http_request & req)
+    {
+        _send_lock.lock();
+        _send_queues.push_back(req);
+        _send_lock.unlock();
+    }
+
+    void handle_send_queue()
+    {
+        _send_lock.lock();
+        for (auto i = _send_queues.begin(); i != _send_queues.end(); ++i) {
+            do_send(*i);
+        }
+        _send_queues.clear();
+        _send_lock.unlock();
     }
 
     void do_send(const http_request & req)

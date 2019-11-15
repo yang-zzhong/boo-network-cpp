@@ -3,8 +3,6 @@
 #include <string>
 #include <map>
 
-namespace boo { namespace network {
-
 class target_t {
 public:
     target_t() { }
@@ -95,11 +93,53 @@ public:
         _queries = queries;
     }
 
+    static char from_hex(char ch) {
+        return isdigit(ch) ? ch - '0' : tolower(ch) - 'a' + 10;
+    }
+
+    static char to_hex(char code) {
+        static char hex[] = "0123456789abcdef";
+        return hex[code & 15];
+    }
+
+    static std::string url_encode(const std::string & input)
+    {
+        std::string out;
+        for (size_t i = 0; i < input.length(); ++i) {
+          if (isalnum(input[i]) || input[i] == '-' || input[i] == '_' || input[i] == '.' || input[i] == '~') {
+            out += input[i];
+          } else if (input[i] == ' ') {
+            out += '+';
+          } else {
+            out += '%' + to_hex(input[i] >> 4) + to_hex(input[i] & 15);
+          }
+        }
+        return out;
+    }
+
+    static std::string url_decode(const std::string & input)
+    {
+        std::string out;
+        for (size_t i = 0; i < input.length(); ++i) {
+            if (i < input.length() - 2 && input[i] == '%') {
+                out += from_hex(input[i + 1]) << 4 | from_hex(input[i + 2]);
+                i += 2;
+                continue;
+            }
+            if (input[i] == '+') {
+                out += ' ';
+                continue;
+            }
+            out += input[i];
+        }
+        return out;
+    }
+
     static std::string encode_query(const std::map<std::string, std::string> & params)
     {
         std::string s;
-        int idx = 0;
-        int qs = params.size();
+        size_t idx = 0;
+        auto qs = params.size();
         for (auto i = params.begin(); i != params.end(); ++i) {
             if (i->first == "") {
                 continue;
@@ -121,7 +161,7 @@ public:
     std::string str() const
     {
         std::string s(_path);
-        int qs = _queries.size();
+        auto qs = _queries.size();
         if (qs > 0) {
             s.append("?");
             s.append(encode_query(_queries));
@@ -150,5 +190,3 @@ private:
 
     std::string _empty = "";
 };
-
-}} // vod::network

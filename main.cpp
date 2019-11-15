@@ -83,19 +83,27 @@ void send_ws() {
         printf(msg["data"].get<std::string>().c_str());
     });
     ws_client c(&client_ws_router);
-    c.connect("ws://127.0.0.1:8800/ws/A01?client_type=control&client_source=vod");
-    json msg;
-    msg["id"] = "/hello-world";
-    msg["method"] = "POST";
-    c.send(msg);
+    c.reconnect_when_closed();
+    if (!c.connect("ws://127.0.0.1:8800/ws/A01?client_type=control&client_source=vod")) {
+        std::cout << "connect error" << std::endl;
+    }
+    // json msg;
+    // msg["id"] = "/hello-world";
+    // msg["method"] = "POST";
+    // c.send(msg);
+    for(;;) {}
 }
 
 int main() {
     start_server(8111);
     http_request req("/hello-world", "POST");
     auto base = "127.0.0.1:8800";
-    send_http(base, req);
-    std::cout << "client out" << std::endl;
+    http_client::send(base, req, [](const http_response & res) {
+        std::cout << res.body << std::endl;
+    });
+    http_response res;
+    http_client::send(base, req, res);
+    std::cout << res.body << std::endl;
 
     return 0;
 }

@@ -4,8 +4,10 @@
 #include "3rd/json.hpp"
 #include "3rd/mongoose.h"
 #include "http_message.hpp"
+#include <iostream>
 #include <sstream>
 #include <string>
+#include <mutex>
 #include <functional>
 #include <map>
 #include <list>
@@ -16,9 +18,49 @@ namespace boo { namespace network {
 
 using nlohmann::json;
 
+enum conn_type {
+    conn_type_ws,
+    conn_type_http
+};
+
 class http_server {
 
+    struct msg_t {
+        mg_connection * nc;
+        std::string str;
+    };
+    std::vector<msg_t> _for_send;
+    std::mutex _m;
+    std::function<void(conn_type t, const std::string & method, const string & path, const std::string & content)> _on_api;
+    std::function<void(const std::string & msg)> _on_ws_sent;
 public:
+
+    void on_api(std::function<void(conn_type t, const std::string & m, const std::string & path, const std::string & content)> onapi)
+    {
+        _on_api = onapi;
+    }
+
+    void on_ws_sent(std::function<void(const std::string & content)> onsent)
+    {
+        _on_ws_sent = onsent;
+    }
+
+    void push_to_send(mg_connection * nc, const std::string & str)
+    {
+        _m.lock();
+        _for_send.push_back(msg_t{nc, str});
+        _m.unlock();
+    }
+
+    void send()
+    {
+        _m.lock();
+        for (auto i = _for_send.begin(); i != _for_send.end(); ++i) {
+            mg_send_websocket_frame(i->nc, WEBSOCKET_OP_TEXT, i->str.c_str(), i->str.length());
+        }
+        _for_send.clear();
+        _m.unlock();
+    }
 
 class http_context {
     struct mg_connection * _nc;
@@ -111,7 +153,7 @@ public:
         }
         std::string header;
         if (headers != nullptr) {
-            int idx = 0;
+            unsigned int idx = 0;
             for (auto i = headers->begin(); i != headers->end(); ++i) {
                 header += i->first + ": " + i->second;
                 if (idx++ < headers->size() - 1) {
@@ -142,6 +184,7 @@ public:
 
 class send_next_t {
 public:
+    virtual ~send_next_t(){}
     virtual void send(struct mg_connection * _nc) = 0;
     virtual bool send_complete() = 0;
     virtual void send_ok(struct mg_connection * _nc) = 0;
@@ -151,10 +194,11 @@ public:
 
 class ws_conn {
     struct mg_connection * _nc;
+    http_server * _server;
     bool _valid_req = true;
 public:
     json req;
-    ws_conn(struct mg_connection * conn): _nc(conn) {}
+    ws_conn(struct mg_connection * conn, http_server * s): _nc(conn), _server(s) {}
 
     bool is_valid() {
         return _valid_req;
@@ -164,9 +208,10 @@ public:
     {
         stringstream out;
         out << data;
-        std::string msg = out.str();
-
-        mg_send_websocket_frame(_nc, WEBSOCKET_OP_TEXT, msg.c_str(), msg.length());
+        if (_server->_on_ws_sent != nullptr) {
+            _server->_on_ws_sent(out.str());
+        }
+        _server->push_to_send(_nc, out.str());
     }
 
     bool eq(const ws_conn & ws) const
@@ -266,6 +311,9 @@ public:
             return;
         }
         auto req = http_request::from_hm(hm);
+        if (_on_api != nullptr) {
+            _on_api(conn_type_http, req.method, req.target.str(), req.body);
+        }
         routing::params p;
         _http_router->route(routing::concat_method_path(req.method, req.target.path()), &p,
             [&](bool path_found, routing::params * p,  function<void(http_context *, routing::params *)> callback) {
@@ -297,11 +345,12 @@ public:
         std::string input((const char *)hm->data, hm->size);
         json req;
         try {
+            std::cout << input << std::endl;
             req = json::parse(input);
         } catch (exception ex) {
             return;
         }
-        ws_conn ctx(nc);
+        ws_conn ctx(nc, this);
         auto id_iter = req.find("id");
         if (id_iter == req.end()) {
             return;
@@ -310,6 +359,9 @@ public:
         auto method_iter = req.find("method");
         if (method_iter == req.end()) {
             return;
+        }
+        if (_on_api != nullptr) {
+            _on_api(conn_type_ws, method_iter->get<std::string>(), id_iter->get<std::string>(), input);
         }
         routing::params p;
         _ws_router->route(routing::concat_method_path(method_iter->get<string>(), id_iter->get<string>()), &p,
@@ -363,12 +415,13 @@ public:
                 break;
             case MG_EV_CLOSE:
                 if (is_websocket(nc)) {
-                    s->on_ws_close(ws_conn{ nc });
+                    s->on_ws_close(ws_conn{ nc, s });
                 } else {
                     s->on_http_close(nc);
                 }
                 break;
         }
+        s->send();
     };
     
     void listen(int port)
